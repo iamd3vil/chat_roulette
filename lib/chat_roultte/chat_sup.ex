@@ -6,8 +6,12 @@ defmodule ChatRoulette.ChatSup do
   end
 
   def init([]) do
+
+    :pg2.create("available")
+    :pg2.create("connected")
+
     children = [
-      worker(ChatRoulette.ChatWorker, [], restart: :transient)
+      worker(ChatRoulette.ChatWorker, [], restart: :transient),
     ]
 
     supervise(children, strategy: :simple_one_for_one)
