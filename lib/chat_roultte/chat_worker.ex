@@ -2,28 +2,34 @@ defmodule ChatRoulette.ChatWorker do
   use GenServer
   require Logger
 
+  @welcome_message """
+  Hi. Welcome to Chat Roulette. We are going to connect you to a stranger. 
+  For now please enter your name:\r\n
+  """
+
   def start_link(client) do
     GenServer.start_link(__MODULE__, client, [])
   end
 
   def init(client) do
-    :gen_tcp.send(client, "Hi. Welcome to Chat Roulette. We are going to connect you to a stranger. For now please enter your name:\r\n")
+    :gen_tcp.send(client, @welcome_message)
     {:ok, name} = recv_name(client) # Get the name of the client.
     Logger.debug "Client connected. Name: #{inspect name}"
-    connected_proc =
+    {connected_proc, connected_proc_ref} =
       case :pg2.get_members("available") do
         [] ->
           :pg2.join("available", self())
           :gen_tcp.send(client, "Hey #{name}. Waiting for someone to join\r\n")
-          nil
+          {nil, nil}
         members ->
           member = Enum.random(members)
-          GenServer.call(member, {:connect, self()})
+          :ok = GenServer.call(member, {:connect, self()})
+          ref = Process.monitor(member)
           :gen_tcp.send(client, "Hey #{name}. Found someone. Say hi\r\n")
-          member
+          {member, ref}
       end
     :inet.setopts(client, active: :once)
-    {:ok, %{socket: client, name: name, connected_proc: connected_proc, connected_proc_ref: nil}}
+    {:ok, %{socket: client, name: name, connected_proc: connected_proc, connected_proc_ref: connected_proc_ref}}
   end
 
   # If we get data when we are not connected, just send a wait message.
