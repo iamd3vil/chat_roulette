@@ -23,7 +23,7 @@ defmodule ChatRoulette.ChatWorker do
           member
       end
     :inet.setopts(client, active: :once)
-    {:ok, %{socket: client, name: name, connected_proc: connected_proc}}
+    {:ok, %{socket: client, name: name, connected_proc: connected_proc, connected_proc_ref: nil}}
   end
 
   # If we get data when we are not connected, just send a wait message.
@@ -48,6 +48,14 @@ defmodule ChatRoulette.ChatWorker do
     {:noreply, state}
   end
 
+  # When the connected process dies, we leave connected and join available again
+  def handle_info({:DOWN, ref, :process, pid, _}, %{connected_proc: pid, connected_proc_ref: ref} = state) do
+    :pg2.leave("connected", self())
+    :pg2.join("available", self())
+    :gen_tcp.send(state.socket, "Your partner left. Waiting for someone else now\r\n")
+    {:noreply, %{state | connected_proc: nil, connected_proc_ref: nil}}
+  end
+
   def handle_info({:tcp_closed, _}, state) do
     {:stop, :normal, state}
   end
@@ -60,18 +68,22 @@ defmodule ChatRoulette.ChatWorker do
 
   # Got connect request.
   def handle_call({:connect, pid}, _from, %{name: name, socket: client} = state) do
-    Logger.debug "Got connect request from pid"
+    Logger.debug "Got connect request from pid: #{inspect pid}"
+
+    # Monitor the pid
+    ref = Process.monitor(pid)
+
     :pg2.leave("available", self())
     :pg2.join("connected", self())
     :gen_tcp.send(client, "Hey #{name}. Found someone say hi\r\n")
-    {:reply, :ok, %{ state | connected_proc: pid, name: name}}
+    {:reply, :ok, %{ state | connected_proc: pid, connected_proc_ref: ref}}
   end
 
-  def handle_cast(:disconnect, %{socket: client, name: name}) do
+  def handle_cast(:disconnect, %{socket: client} = state) do
     :pg2.leave("connected", self())
     :pg2.join("available", self())
     :gen_tcp.send(client, "Your partner left. Waiting for someone else now\r\n")
-    {:noreply, %{socket: client, connected_proc: nil, name: name}}
+    {:noreply, %{state | connected_proc: nil, connected_proc_ref: nil}}
   end
 
   def handle_cast({:new_message, msg}, %{socket: client, connected_proc: _pid} = state) do
@@ -86,6 +98,8 @@ defmodule ChatRoulette.ChatWorker do
         recv_name(socket)
       {:ok, name} ->
         {:ok, String.trim(name)}
+      {:error, error} ->
+        {:error, error}
     end
   end
 end
